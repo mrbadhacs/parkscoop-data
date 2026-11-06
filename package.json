@@ -1,0 +1,12 @@
+{
+  "name": "parkscoop-data",
+  "private": true,
+  "description": "ParkScoop open wait-time log. Node 20+, no runtime dependencies.",
+  "scripts": {
+    "start": "node scripts/run.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

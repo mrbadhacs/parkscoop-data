@@ -1,0 +1,63 @@
+name: Log wait times
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Log a sample even outside the window or inside the 12-minute gap
+        required: false
+        type: boolean
+        default: false
+      rebuild:
+        description: Rebuild waits/rollup.json from waits/days
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: log-waits
+  cancel-in-progress: false
+
+jobs:
+  log:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Log waits and precompute views
+        run: node scripts/run.js ${{ github.event_name == 'workflow_dispatch' && inputs.force && '--force' || '' }} ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild && '--rebuild' || '' }}
+
+      - name: Commit one ET day
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for p in waits hours forecasts scores; do
+            if [ -e "$p" ]; then git add -A -- "$p"; fi
+          done
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          read -r TODAY HM < <(node --input-type=module -e "const f=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}); const o={}; for (const p of f.formatToParts(new Date())) o[p.type]=p.value; let h=o.hour==='24'?'00':o.hour; process.stdout.write(o.year+'-'+o.month+'-'+o.day+' '+h+':'+o.minute);")
+          MSG="data: ${TODAY} (${HM} ET)"
+          LAST="$(git log -1 --pretty=%s || true)"
+          if [[ "$LAST" == "data: ${TODAY}"* ]] && git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            git commit --amend -m "$MSG"
+            git push --force-with-lease origin HEAD:main
+          else
+            git commit -m "$MSG"
+            git push origin HEAD:main
+          fi
