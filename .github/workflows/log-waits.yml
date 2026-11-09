@@ -28,11 +28,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Parent commit must be present. `git commit --amend` on a depth-1
+      # clone drops that parent and the force-push would orphan main.
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
 
@@ -51,12 +53,24 @@ jobs:
             echo "No changes"
             exit 0
           fi
-          read -r TODAY HM < <(node --input-type=module -e "const f=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}); const o={}; for (const p of f.formatToParts(new Date())) o[p.type]=p.value; let h=o.hour==='24'?'00':o.hour; process.stdout.write(o.year+'-'+o.month+'-'+o.day+' '+h+':'+o.minute);")
+          # `read` returns 1 on EOF when the line has no trailing newline, and
+          # `set -e` would abort the step before the commit. console.log adds
+          # the newline; `|| true` covers a writer that still omits it.
+          read -r TODAY HM < <(node --input-type=module -e "const f=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}); const o={}; for (const p of f.formatToParts(new Date())) o[p.type]=p.value; let h=o.hour==='24'?'00':o.hour; console.log(o.year+'-'+o.month+'-'+o.day+' '+h+':'+o.minute);") || true
+          if [[ ! "${TODAY:-} ${HM:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}$ ]]; then
+            echo "Could not determine ET timestamp (got: '${TODAY:-}' '${HM:-}')" >&2
+            exit 1
+          fi
           MSG="data: ${TODAY} (${HM} ET)"
           LAST="$(git log -1 --pretty=%s || true)"
-          if [[ "$LAST" == "data: ${TODAY}"* ]] && git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+          if [[ "$LAST" == "data: ${TODAY}"* ]] && git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            expected="$(git rev-parse HEAD)"
             git commit --amend -m "$MSG"
-            git push --force-with-lease origin HEAD:main
+            if ! git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+              echo "Amend dropped the parent commit; refusing to push" >&2
+              exit 1
+            fi
+            git push --force-with-lease="refs/heads/main:${expected}" origin HEAD:main
           else
             git commit -m "$MSG"
             git push origin HEAD:main
