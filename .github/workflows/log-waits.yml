@@ -2,7 +2,9 @@ name: Log wait times
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # Restart safety net only. The job itself samples every 15 minutes for
+    # about 5h45m (under the 6h runner limit). GitHub often skips */15.
+    - cron: '7 */3 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -27,51 +29,23 @@ jobs:
   log:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Platform cap is 360. The loop stops itself at 5h45m.
+    timeout-minutes: 359
     steps:
       # Parent commit must be present. `git commit --amend` on a depth-1
       # clone drops that parent and the force-push would orphan main.
       - uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 2
 
       - uses: actions/setup-node@v7
         with:
           node-version: '20'
 
-      - name: Log waits and precompute views
-        run: node scripts/run.js ${{ github.event_name == 'workflow_dispatch' && inputs.force && '--force' || '' }} ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild && '--rebuild' || '' }}
-
-      - name: Commit one ET day
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for p in waits hours forecasts scores; do
-            if [ -e "$p" ]; then git add -A -- "$p"; fi
-          done
-          if git diff --cached --quiet; then
-            echo "No changes"
-            exit 0
-          fi
-          # `read` returns 1 on EOF when the line has no trailing newline, and
-          # `set -e` would abort the step before the commit. console.log adds
-          # the newline; `|| true` covers a writer that still omits it.
-          read -r TODAY HM < <(node --input-type=module -e "const f=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}); const o={}; for (const p of f.formatToParts(new Date())) o[p.type]=p.value; let h=o.hour==='24'?'00':o.hour; console.log(o.year+'-'+o.month+'-'+o.day+' '+h+':'+o.minute);") || true
-          if [[ ! "${TODAY:-} ${HM:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}$ ]]; then
-            echo "Could not determine ET timestamp (got: '${TODAY:-}' '${HM:-}')" >&2
-            exit 1
-          fi
-          MSG="data: ${TODAY} (${HM} ET)"
-          LAST="$(git log -1 --pretty=%s || true)"
-          if [[ "$LAST" == "data: ${TODAY}"* ]] && git rev-parse --verify --quiet HEAD~1 >/dev/null; then
-            expected="$(git rev-parse HEAD)"
-            git commit --amend -m "$MSG"
-            if ! git rev-parse --verify --quiet HEAD~1 >/dev/null; then
-              echo "Amend dropped the parent commit; refusing to push" >&2
-              exit 1
-            fi
-            git push --force-with-lease="refs/heads/main:${expected}" origin HEAD:main
-          else
-            git commit -m "$MSG"
-            git push origin HEAD:main
-          fi
+      - name: Sample and commit until the job budget
+        env:
+          # First pass only. Later passes use the normal window and gap.
+          LOG_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && '1' || '0' }}
+          LOG_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild && '1' || '0' }}
+        run: bash scripts/log-loop.sh

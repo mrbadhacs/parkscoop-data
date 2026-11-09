@@ -30,11 +30,11 @@ Volcano Bay is logged and included in reliability and crowd history. Best Time t
 
 ## Logger
 
-GitHub Actions runs `.github/workflows/log-waits.yml` every 15 minutes on this public repository.
+GitHub Actions runs `.github/workflows/log-waits.yml` on this public repository. Each job samples, commits, and sleeps until the next 15-minute mark, then repeats for about 5 hours 45 minutes so it stays under the 6-hour job limit. A cron at minute 7 of every third hour (`7 */3 * * *`) starts another job only if the previous one has stopped. The `log-waits` concurrency group, with `cancel-in-progress: false`, keeps a single job in progress and lets the next one wait.
 
 - Window: 7:30 AM through 2:30 AM America/New_York (`minute >= 450 || minute <= 150`). That covers East Coast rope drop through a Disneyland midnight, which is 3:00 AM Eastern.
 - A sample is skipped when the previous check in today's file is less than 12 minutes old.
-- `workflow_dispatch` inputs `force` and `rebuild` bypass that gate and rebuild the rollup.
+- `workflow_dispatch` inputs `force` and `rebuild` bypass that gate on the first pass of the run and rebuild the rollup. Later passes in that job use the normal window and gap.
 - Each value is the posted standby wait while `OPERATING` (or `null` if none was posted), `-1` when the ride is `DOWN`, and `-2` for `CLOSED`, `REFURBISHMENT`, and every other status.
 
 Days are sealed into `waits/rollup.json` only once `D < today - 1`. That extra day lets a Pacific late night (midnight to 2:59 AM Eastern on `D+1`, which is 9:00 PM to 11:59 PM Pacific on `D`) land in the file before day `D` is frozen. After that, a routine run reads the rollup plus the last two or three raw day files. It does not reread the archive.
@@ -45,7 +45,7 @@ The forecast for a date is written only while that date is still in the future, 
 
 ## Git history
 
-The workflow keeps one commit per Eastern date. The message is `data: YYYY-MM-DD (HH:MM ET)`. If the tip of `main` is already that date's data commit and it has a parent, the run amends it and pushes with `--force-with-lease`. The next date starts a new commit. History stays near 365 commits a year.
+The workflow keeps one commit per Eastern date. The message is `data: YYYY-MM-DD (HH:MM ET)`. If the tip of `main` is already that date's data commit and it has a parent, the run amends it and pushes with `--force-with-lease`. Before each commit it fetches `main`. When the remote only moved forward it fast-forwards with `git pull --rebase` (the sample is autostashed). When the tip was rewritten by an amend, it checks out that fetched tip and keeps the uncommitted sample, so the lease is the current remote SHA. The next date starts a new commit. History stays near 365 commits a year.
 
 ## Run it
 
